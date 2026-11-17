@@ -1,0 +1,15 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+.aws/
+.ssh/
+*.pem
+*.key
+
+# Local OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*~
