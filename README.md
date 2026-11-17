@@ -1,8 +1,8 @@
 # p2p-drive
 
-A local Tahoe-LAFS proof of concept for an open-source, decentralized alternative
-to Google Drive. This phase validates encrypted storage and recovery; it does not
-implement a custom P2P engine, user accounts, or a Drive-style UI.
+A local Tahoe-LAFS proof of concept for open-source, decentralized file storage.
+This phase validates encrypted storage and recovery; it does not implement a
+custom P2P engine, user accounts, or a file management UI.
 
 ## Architecture
 
