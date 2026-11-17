@@ -18,12 +18,18 @@ KUBE = ['kubectl', '--context', os.environ.get('KUBE_CONTEXT', 'k3d-p2p-drive'),
 RELEASE = os.environ.get('RELEASE', 'tahoe')
 
 
+def progress(message):
+    print(f'[{time.strftime("%H:%M:%S")}] {message}', flush=True)
+
+
 def k(*args):
     return subprocess.check_output(KUBE + list(args))
 
 
 def eventually(check, description, timeout=120):
+    progress(f'Waiting for {description} (timeout: {timeout}s)...')
     deadline = time.monotonic() + timeout
+    next_update = time.monotonic() + 10
     while time.monotonic() < deadline:
         try:
             value = check()
@@ -31,12 +37,16 @@ def eventually(check, description, timeout=120):
                 return value
         except (OSError, ValueError, KeyError, urllib.error.URLError):
             pass
+        if time.monotonic() >= next_update:
+            progress(f'Still waiting for {description}...')
+            next_update = time.monotonic() + 10
         time.sleep(2)
     raise RuntimeError('Timed out waiting for ' + description)
 
 
 @contextmanager
 def api():
+    progress('Starting a private client port-forward...')
     # Let kubectl choose an unused local port and parse its non-secret output.
     with tempfile.TemporaryFile(mode='w+') as log:
         proc = subprocess.Popen(KUBE + ['port-forward', '--address', '127.0.0.1',
@@ -92,6 +102,7 @@ def require(condition, message):
 
 def healthy_upload(base):
     eventually(lambda: connected(base) == 3, 'three connected storage servers')
+    progress('Checking storage placement across agent nodes...')
     pods = json.loads(k('get', 'pods', '-l', 'app.kubernetes.io/instance=' + RELEASE +
                         ',tahoe-role=storage', '-o', 'json'))['items']
     require(len(pods) == 3, 'Expected exactly three storage pods')
@@ -103,6 +114,7 @@ def healthy_upload(base):
     require(hosts <= allowed, 'A storage server is on a control-plane node')
     print('PASS: three storage servers placed on three distinct agent nodes')
     client = json.loads(k('get', 'pod', RELEASE + '-client-0', '-o', 'json'))
+    progress('Checking that a storage pod cannot access the client HTTP API...')
     # Loopback access already succeeded above. The API must fail from a peer pod.
     probe = (
         'import socket,sys\n'
@@ -119,8 +131,10 @@ def healthy_upload(base):
     # Random 2 MiB input prevents literal-file encoding and deduplication.
     original = os.urandom(2 * 1024 * 1024)
     digest = hashlib.sha256(original).hexdigest()
+    progress('Uploading 2 MiB of random data...')
     cap = upload(base, original)
     require(cap.startswith('URI:CHK:'), 'Expected an immutable erasure-coded CHK file')
+    progress('Verifying erasure coding and share distribution...')
     healthy = check(base, cap)
     require(healthy['count-shares-needed'] == 2 and healthy['count-shares-expected'] == 3,
             'Encoding must be 2-of-3')
@@ -131,6 +145,7 @@ def healthy_upload(base):
             and len({v[0] for v in sharemap.values()}) == 3,
             'Share map must assign each share to a different server')
     print('PASS: Tahoe reports 2-of-3 encoding and one distinct share per server')
+    progress('Downloading with all storage servers online and comparing SHA-256...')
     require(hashlib.sha256(download(base, cap)).hexdigest() == digest,
             'Healthy download SHA-256 mismatch')
     print('PASS: healthy download SHA-256 matches')
@@ -138,26 +153,32 @@ def healthy_upload(base):
 
 
 def recovery():
+    progress(f'Starting recovery test: context={KUBE[2]}, namespace={KUBE[4]}, release={RELEASE}')
     with api() as base:
         cap, digest = healthy_upload(base)
     # Exercise every single-server outage, retaining each StatefulSet PVC.
     for index in range(3):
         name = f'{RELEASE}-storage-{index}'
+        progress(f'Outage {index + 1}/3: recording {name} volume and identity...')
         pvc = 'data-' + name + '-0'
         before = json.loads(k('get', 'pvc', pvc, '-o', 'json'))
         identity = k('exec', name + '-0', '--', 'sha256sum', '/data/node/private/node.privkey')
         try:
+            progress(f'Stopping {name} without deleting its PVC; waiting for pod removal...')
             k('scale', 'statefulset/' + name, '--replicas=0')
             k('wait', '--for=delete', 'pod/' + name + '-0', '--timeout=120s')
             # A fresh client process cannot serve data from a previous download's memory.
+            progress('Restarting the client to clear in-memory state; waiting for readiness...')
             k('rollout', 'restart', 'statefulset/' + RELEASE + '-client')
             k('rollout', 'status', 'statefulset/' + RELEASE + '-client', '--timeout=180s')
             with api() as base:
                 eventually(lambda: connected(base) == 2, 'two remaining connected servers')
+                progress('Verifying exactly two shares remain reachable...')
                 degraded = check(base, cap)
                 require(degraded['count-shares-good'] == 2 and
                         degraded['count-good-share-hosts'] == 2,
                         'Degraded file must have exactly two reachable shares on two servers')
+                progress(f'Downloading while {name} is offline and comparing SHA-256...')
                 require(hashlib.sha256(download(base, cap)).hexdigest() == digest,
                         'Degraded download SHA-256 mismatch')
             after = json.loads(k('get', 'pvc', pvc, '-o', 'json'))
@@ -166,10 +187,12 @@ def recovery():
                     'Persistent volume changed during outage')
             print(f'PASS: {name} offline; two-share download SHA-256 matches; PVC retained')
         finally:
+            progress(f'Restoring {name}; waiting for readiness...')
             k('scale', 'statefulset/' + name, '--replicas=1')
             k('rollout', 'status', 'statefulset/' + name, '--timeout=180s')
         with api() as base:
             eventually(lambda: connected(base) == 3, 'restored server connection')
+            progress(f'Checking {name} retained its original share and identity...')
             require(check(base, cap)['count-shares-good'] == 3, 'Restored share missing')
         require(k('exec', name + '-0', '--', 'sha256sum', '/data/node/private/node.privkey')
                 == identity, 'Storage identity changed after restart')
