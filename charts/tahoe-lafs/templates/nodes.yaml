@@ -1,0 +1,117 @@
+{{- $root := . -}}
+{{- if ne (len .Values.agentNodes) 3 }}
+{{- fail "agentNodes must contain exactly three distinct agent hostnames" }}
+{{- end }}
+{{- if ne (len (uniq .Values.agentNodes)) 3 }}
+{{- fail "agentNodes must contain exactly three distinct agent hostnames" }}
+{{- end }}
+{{- $nodes := list (dict "name" "introducer" "role" "introducer") }}
+{{- if .Values.gridEnabled }}
+{{- $nodes = concat $nodes (list (dict "name" "client" "role" "client")) }}
+{{- range $i, $host := .Values.agentNodes }}
+{{- $nodes = append $nodes (dict "name" (printf "storage-%d" $i) "role" "storage" "agent" $host) }}
+{{- end }}
+{{- end }}
+{{- range $node := $nodes }}
+{{- $name := printf "%s-%s" $root.Release.Name $node.name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/instance: {{ $root.Release.Name }}
+    app.kubernetes.io/component: {{ $node.name }}
+  ports:
+    - name: tub
+      port: 3457
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $node.name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ $root.Release.Name }}
+        app.kubernetes.io/component: {{ $node.name }}
+        tahoe-role: {{ $node.role }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if eq $node.role "storage" }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ $node.agent }}
+      {{- end }}
+      containers:
+        - name: tahoe
+          image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag }}"
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: TAHOE_ROLE
+              value: {{ $node.role }}
+            - name: TAHOE_HOST
+              value: {{ $name }}-0.{{ $name }}.{{ $root.Release.Namespace }}.svc.cluster.local
+          ports:
+            - name: tub
+              containerPort: 3457
+          readinessProbe:
+            {{- if eq $node.role "client" }}
+            exec:
+              command: [python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3456/', timeout=3)"]
+            {{- else }}
+            tcpSocket:
+              port: tub
+            {{- end }}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            {{- if ne $node.role "introducer" }}
+            - name: introducer
+              mountPath: /introducer
+              readOnly: true
+            {{- end }}
+      {{- if ne $node.role "introducer" }}
+      volumes:
+        - name: introducer
+          secret:
+            secretName: {{ $root.Values.introducerSecret }}
+            defaultMode: 0440
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ $root.Values.persistence.storageClass }}
+        resources:
+          requests:
+            storage: {{ $root.Values.persistence.size }}
+{{- end }}
