@@ -13,3 +13,12 @@
 Thumbs.db
 *.swp
 *~
+
+# PoC capabilities, downloads, and local node state
+.local/
+*.cap
+*.privkey
+*.furl
+.tahoe/
+__pycache__/
+*.pyc

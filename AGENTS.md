@@ -23,4 +23,8 @@ These instructions apply to the entire p2p-drive repository.
 ## Repository
 
 - Canonical remote: `git@github.com:axelbostrom/p2p-drive.git`.
-- Application tooling and tests have not been selected yet. Update these instructions with actual development and test commands when tooling is introduced.
+- Phase 1 uses Tahoe-LAFS 1.20.0, Docker, Helm, and the `k3d-p2p-drive` context. Do not operate on another cluster implicitly.
+- Build/import: `./scripts/build.sh`. Deploy: `./scripts/deploy.sh`. Integration: `./scripts/test-recovery.sh`.
+- Before committing run `helm lint charts/tahoe-lafs`, render with `gridEnabled=true`, `bash -n` for each script in `scripts/*.sh`, `python3 -m py_compile docker/entrypoint.py scripts/*.py`, and `git diff --check`. Run recovery integration for storage, chart, image, or script changes when the local cluster is available.
+- Never print or commit Tahoe capabilities, introducer FURLs, generated node directories, or private identities. Use the bootstrap Secret flow and ignored `.local/` for local artifacts.
+- Recovery tests may scale storage StatefulSets to zero temporarily; always restore them and retain PVCs. Do not delete persistent data to simulate an outage.

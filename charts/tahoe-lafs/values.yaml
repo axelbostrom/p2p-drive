@@ -1,0 +1,15 @@
+image:
+  repository: p2p-drive/tahoe-lafs
+  tag: "1.20.0-poc"
+  pullPolicy: IfNotPresent
+persistence:
+  storageClass: local-path
+  size: 1Gi
+# First install starts only the introducer; deploy.sh creates its Secret.
+gridEnabled: false
+introducerSecret: tahoe-introducer
+# Existing k3d agent node hostnames. Override for another cluster.
+agentNodes:
+  - k3d-p2p-drive-agent-0
+  - k3d-p2p-drive-agent-1
+  - k3d-p2p-drive-agent-2
